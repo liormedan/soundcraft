@@ -22,6 +22,7 @@ pub mod score_editor;
 pub mod shortcuts;
 pub mod theme;
 pub mod toolbar;
+pub mod trimios;
 pub mod video_track;
 pub mod video_window;
 pub mod widgets;
@@ -42,6 +43,15 @@ pub use control::ControlRequest;
 pub enum MainWindow {
     Edit,
     Mix,
+}
+
+/// Look of built-in plugin windows (`ui.set {"plugin_skin": "trimios" | "classic"}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginSkin {
+    #[default]
+    Trimios,
+    Classic,
 }
 
 /// UI state (serde, so agents can read and set it).
@@ -101,6 +111,8 @@ pub struct UiState {
     pub configurations: Vec<(String, Value)>,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
+    /// How built-in plugin windows look: the Trimios skin (default) or the classic parameter list.
+    pub plugin_skin: PluginSkin,
     /// The main window's size (logical points) and maximized state, and the interface scale, as
     /// the desktop app last saw them; it restores them at launch.
     pub window_size: [f32; 2],
@@ -158,6 +170,7 @@ impl Default for UiState {
             workspace_dir: String::new(),
             configurations: Vec::new(),
             theme: theme::ThemeMode::Dark,
+            plugin_skin: PluginSkin::default(),
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,

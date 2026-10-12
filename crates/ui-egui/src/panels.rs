@@ -357,7 +357,7 @@ pub(crate) fn undo_history(app: &mut SoundApp, ui: &mut Ui) {
 fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
     let wins = app.ui.plugin_windows.clone();
     let mut keep = Vec::new();
-    for (tid, slot) in wins {
+    for (n, (tid, slot)) in wins.into_iter().enumerate() {
         // The instrument slot (an instrument track's instrument) or an insert slot.
         let instrument = slot == soundcraft_mix::INSTRUMENT_SLOT;
         let Some((tname, ins)) = app.engine.session().track(tid).and_then(|t| {
@@ -368,6 +368,12 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         };
         let Some(info) = crate::mix_window::plugin_info(&ins.plugin) else { continue };
         let place = if instrument { "instrument".to_string() } else { char::from(b'a'.saturating_add(slot as u8)).to_string() };
+        if app.ui.plugin_skin == crate::PluginSkin::Trimios && !instrument && !soundcraft_mix::is_third_party(&ins.plugin) {
+            if trimios_window(app, ctx, (tid, slot, n), &format!("{tname} · {place}"), info, &ins) {
+                keep.push((tid, slot));
+            }
+            continue;
+        }
         let mut open = true;
         egui::Window::new(format!("{tname} · {place} · {}", info.name))
             .id(egui::Id::new(("plugin", tid.0, slot)))
@@ -437,15 +443,7 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                 ui.add(sl)
                             };
                             if (x - v).abs() > f32::EPSILON {
-                                let _ = app.engine.execute_merged(
-                                    "mix.insert_param",
-                                    &json!({"track": tid.0, "slot": slot, "param": p.id, "value": x}),
-                                    &format!("param:{}:{slot}:{}", tid.0, p.id),
-                                );
-                                if let Some(pl) = &app.player {
-                                    // Keep the plugin's own editor in step.
-                                    pl.editor_set_param(tid, slot, p.id, x);
-                                }
+                                set_param(app, tid, slot, p.id, x);
                             }
                             let _ = resp;
                             ui.label(egui::RichText::new(p.format(x)).font(mono(11.0)));
@@ -459,6 +457,61 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         }
     }
     app.ui.plugin_windows = keep;
+}
+
+/// One parameter edit from a plugin window, merged into one undo step per gesture.
+fn set_param(app: &mut SoundApp, tid: soundcraft_model::TrackId, slot: usize, param: &str, x: f32) {
+    let _ = app.engine.execute_merged(
+        "mix.insert_param",
+        &json!({"track": tid.0, "slot": slot, "param": param, "value": x}),
+        &format!("param:{}:{slot}:{param}", tid.0),
+    );
+    if let Some(pl) = &app.player {
+        // Keep the plugin's own editor in step.
+        pl.editor_set_param(tid, slot, param, x);
+    }
+}
+
+/// A built-in plugin in the Trimios skin (`crate::trimios`). Returns whether it stays open.
+fn trimios_window(
+    app: &mut SoundApp,
+    ctx: &egui::Context,
+    (tid, slot, n): (soundcraft_model::TrackId, usize, usize),
+    title: &str,
+    info: &'static soundcraft_dsp::PluginInfo,
+    ins: &soundcraft_model::Insert,
+) -> bool {
+    use crate::trimios::slate;
+    let mut out = crate::trimios::Out::default();
+    let frame = egui::Frame::new()
+        .fill(slate::BG)
+        .stroke(Stroke::new(1.0, slate::BORDER_STRONG))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin { left: 0, right: 0, top: 0, bottom: 10 })
+        .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(150) });
+    let w = crate::trimios::width(info);
+    // Windows opened together cascade instead of stacking exactly.
+    let step = n.min(8) as f32 * 32.0;
+    let mut presets = |ui: &mut Ui| preset_menu(app, ui, tid, slot, info, ins);
+    egui::Window::new(format!("{title} · {}", info.name))
+        .id(egui::Id::new(("plugin", tid.0, slot)))
+        .title_bar(false)
+        .resizable(false)
+        .frame(frame)
+        .default_width(w)
+        .default_pos(egui::pos2((ctx.content_rect().width() - w - 40.0 - step).max(0.0), 120.0 + step))
+        .show(ctx, |ui| {
+            ui.set_width(w);
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            crate::trimios::body(ui, (tid.0, slot), title, info, ins, &mut out, &mut presets);
+        });
+    for (param, x) in out.edits {
+        set_param(app, tid, slot, param, x);
+    }
+    if out.toggle_bypass {
+        let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
+    }
+    !out.close
 }
 
 fn eq_curve(ui: &mut Ui, id: &str, ins: &soundcraft_model::Insert) {
