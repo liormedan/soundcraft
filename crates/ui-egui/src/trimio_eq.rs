@@ -4,10 +4,10 @@
 
 use crate::SoundApp;
 use crate::theme::{bold, mono, regular};
-use crate::trimio_tokens::{BANDS, HEADER_HEIGHT, TrimioPalette, radius, space};
+use crate::trimio_shell::{Ctx, card, end_gesture, fmt_db, fmt_freq, header, knob, on_value, palette, pill, set};
+use crate::trimio_tokens::{BANDS, TrimioPalette, radius, space};
 use egui::{Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use serde_json::{Map, Value, json};
-use soundcraft_dsp::{ParamInfo, PluginInfo, Taper};
+use soundcraft_dsp::PluginInfo;
 use soundcraft_model::{Insert, TrackId};
 
 const F_MIN: f32 = 20.0;
@@ -65,57 +65,12 @@ static BAND_MAP: [Band; 7] = [
     Band { label: "High Cut", kind: Kind::LowPass, freq: "lpf_freq", gain: None, q: None, on: Some("lpf_on"), slope: Some("lpf_slope") },
 ];
 
-fn palette() -> TrimioPalette {
-    if crate::theme::is_light() { TrimioPalette::LIGHT } else { TrimioPalette::DARK }
+fn is_on(c: &Ctx, band: &Band) -> bool {
+    band.on.is_none_or(|id| c.value(id) >= 0.5)
 }
 
 fn band_color(i: usize) -> Color32 {
     BANDS.get(i).copied().unwrap_or(Color32::GRAY)
-}
-
-/// The window frame the editor sits in.
-pub fn frame(style: &egui::Style) -> egui::Frame {
-    let p = palette();
-    egui::Frame::window(style).fill(p.bg).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(radius::XL as u8))
-}
-
-struct Ctx<'a> {
-    info: &'static PluginInfo,
-    ins: &'a Insert,
-    tid: TrackId,
-    slot: usize,
-}
-
-impl Ctx<'_> {
-    fn param(&self, id: &str) -> Option<&'static ParamInfo> {
-        self.info.params.iter().find(|p| p.id == id)
-    }
-    fn value(&self, id: &str) -> f32 {
-        let def = self.param(id).map_or(0.0, |p| p.default);
-        self.ins.params.get(id).copied().unwrap_or(def)
-    }
-    fn is_on(&self, band: &Band) -> bool {
-        band.on.is_none_or(|id| self.value(id) >= 0.5)
-    }
-}
-
-/// Sets parameters of one band. One drag gesture merges into one undo step (see [`end_gesture`]).
-fn set(app: &mut SoundApp, c: &Ctx, band: usize, values: &[(&str, f32)]) {
-    let mut params = Map::new();
-    for (id, v) in values {
-        if let Some(p) = c.param(id) {
-            params.insert((*id).to_string(), json!(p.clamp(*v)));
-        }
-    }
-    if params.is_empty() {
-        return;
-    }
-    let key = format!("trimio_eq:{}:{}:{band}", c.tid.0, c.slot);
-    let _ = app.engine.execute_merged("mix.insert_params", &json!({"track": c.tid.0, "slot": c.slot, "params": Value::Object(params)}), &key);
-}
-
-fn end_gesture(app: &mut SoundApp) {
-    app.engine.end_merge();
 }
 
 fn x_of(f: f32, r: Rect) -> f32 {
@@ -134,14 +89,6 @@ fn y_of(db: f32, r: Rect) -> f32 {
 
 fn db_of(y: f32, r: Rect) -> f32 {
     (r.center().y - y) / (r.height() * 0.5).max(1.0) * DB_RANGE
-}
-
-fn fmt_freq(f: f32) -> String {
-    if f >= 1000.0 { format!("{:.2} kHz", f / 1000.0) } else { format!("{f:.0} Hz") }
-}
-
-fn fmt_db(db: f32) -> String {
-    format!("{db:+.1} dB")
 }
 
 fn freq_label(f: f32) -> String {
@@ -184,111 +131,13 @@ pub fn editor(app: &mut SoundApp, ui: &mut Ui, tid: TrackId, slot: usize, info: 
     if dim {
         ui.set_opacity(0.6);
     }
-    header(app, ui, &c, &p);
+    header(app, ui, &c, &p, "Equalizer");
     ui.add_space(space::S2);
     graph(app, ui, &c, &p);
     ui.add_space(space::S3);
     inspector(app, ui, &c, &p);
     ui.add_space(space::S3);
     footer(app, ui, &c, &p);
-}
-
-fn pill(ui: &mut Ui, p: &TrimioPalette, text: &str, active: bool, tip: &str) -> egui::Response {
-    let (fill, fg, border) = if active { (p.accent_muted, p.text_primary, p.accent) } else { (p.surface, p.text_secondary, p.border) };
-    let b = egui::Button::new(egui::RichText::new(text).font(bold(12.0)).color(fg))
-        .fill(fill)
-        .stroke(Stroke::new(1.0, border))
-        .corner_radius(CornerRadius::same(radius::LG as u8))
-        .min_size(vec2(32.0, 28.0));
-    ui.add(b).on_hover_text(tip)
-}
-
-#[derive(Clone, Copy)]
-enum Icon {
-    Power,
-    Undo,
-    Redo,
-}
-
-/// A square header button with an icon drawn in code (Trimio uses Lucide-style line icons).
-fn icon_button(ui: &mut Ui, p: &TrimioPalette, icon: Icon, active: bool, tip: &str) -> egui::Response {
-    let (r, resp) = ui.allocate_exact_size(vec2(32.0, 28.0), Sense::click());
-    let hover = resp.hovered();
-    let (fill, fg, border) = if active {
-        (p.accent_muted, p.text_primary, p.accent)
-    } else {
-        (if hover { p.surface_raised } else { p.surface }, if hover { p.text_primary } else { p.text_secondary }, p.border)
-    };
-    let painter = ui.painter();
-    painter.rect_filled(r, CornerRadius::same(radius::LG as u8), fill);
-    painter.rect_stroke(r, CornerRadius::same(radius::LG as u8), Stroke::new(1.0, border), StrokeKind::Inside);
-    let c = r.center();
-    let st = Stroke::new(1.6, fg);
-    let arc = |a0: f32, a1: f32, rad: f32| -> Vec<Pos2> {
-        (0..=20).map(|k| a0 + (a1 - a0) * k as f32 / 20.0).map(|a| c + vec2(a.cos(), a.sin()) * rad).collect()
-    };
-    use std::f32::consts::PI;
-    match icon {
-        Icon::Power => {
-            painter.add(egui::Shape::line(arc(-PI * 0.5 + 0.7, PI * 1.5 - 0.7, 6.5), st));
-            painter.line_segment([c + vec2(0.0, -8.0), c + vec2(0.0, -1.5)], st);
-        }
-        Icon::Undo | Icon::Redo => {
-            let flip = if matches!(icon, Icon::Redo) { -1.0 } else { 1.0 };
-            let pts: Vec<Pos2> = arc(PI * 1.1, PI * 2.2, 5.5).into_iter().map(|q| pos2(c.x + (q.x - c.x) * flip, q.y + 1.5)).collect();
-            if let Some(tip_pt) = pts.first().copied() {
-                painter.line_segment([tip_pt, tip_pt + vec2(4.0 * flip, -1.0)], st);
-                painter.line_segment([tip_pt, tip_pt + vec2(0.5 * flip, -4.5)], st);
-            }
-            painter.add(egui::Shape::line(pts, st));
-        }
-    }
-    resp.on_hover_text(tip)
-}
-
-fn header(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
-    let width = ui.available_width();
-    let (r, _) = ui.allocate_exact_size(vec2(width, HEADER_HEIGHT), Sense::hover());
-    ui.painter().rect_filled(r, CornerRadius::same(radius::LG as u8), p.header_bg);
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(space::S3, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let ui = &mut child;
-    // Power: on = processing, off = bypassed.
-    if icon_button(ui, p, Icon::Power, !c.ins.bypass, if c.ins.bypass { "Bypassed — click to enable" } else { "Enabled — click to bypass" }).clicked()
-    {
-        let _ = app.run("mix.insert_bypass", json!({"track": c.tid.0, "slot": c.slot}));
-    }
-    ui.label(egui::RichText::new("Equalizer").font(bold(16.0)).color(p.text_primary));
-    let preset = if c.ins.preset.is_empty() || c.ins.preset == "<factory default>" { "Default" } else { c.ins.preset.as_str() };
-    ui.menu_button(egui::RichText::new(format!("{preset}  v")).font(regular(13.0)).color(p.text_secondary), |ui| {
-        crate::panels::preset_menu(app, ui, c.tid, c.slot, c.info, c.ins);
-    });
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if icon_button(ui, p, Icon::Redo, false, "Redo").clicked() {
-            let _ = app.run("edit.redo", json!({}));
-        }
-        if icon_button(ui, p, Icon::Undo, false, "Undo").clicked() {
-            let _ = app.run("edit.undo", json!({}));
-        }
-        ab_buttons(app, ui, c, p);
-    });
-}
-
-/// A/B comparison: two parameter snapshots per insert, kept for the session.
-fn ab_buttons(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
-    let id = egui::Id::new(("trimio_eq_ab", c.tid.0, c.slot));
-    let (mut active, mut other): (u8, Option<Map<String, Value>>) = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or((0, None));
-    let current: Map<String, Value> = c.ins.params.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-    // Right-to-left layout: B first.
-    for (slot_ab, label) in [(1u8, "B"), (0u8, "A")] {
-        if pill(ui, p, label, active == slot_ab, "A/B compare").clicked() && active != slot_ab {
-            let target = other.take().unwrap_or_else(|| current.clone());
-            other = Some(current.clone());
-            active = slot_ab;
-            let _ = app.run("mix.insert_params", json!({"track": c.tid.0, "slot": c.slot, "params": Value::Object(target)}));
-        }
-    }
-    ui.ctx().data_mut(|d| d.insert_temp(id, (active, other)));
 }
 
 fn graph(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
@@ -330,7 +179,7 @@ fn graph(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
     // Each active band's own contribution, as a translucent area in its colour.
     for (i, band) in BAND_MAP.iter().enumerate() {
         let gain_active = band.gain.is_some_and(|g| c.value(g).abs() > 0.05);
-        if !c.is_on(band) || (band.on.is_none() && !gain_active) {
+        if !is_on(c, band) || (band.on.is_none() && !gain_active) {
             continue;
         }
         let resp = response(c, Some(i), &freqs);
@@ -354,7 +203,7 @@ fn graph(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
     let mut hovered_band = None;
     for (i, band) in BAND_MAP.iter().enumerate() {
         let f = c.value(band.freq);
-        let on = c.is_on(band);
+        let on = is_on(c, band);
         let y = match band.gain {
             Some(g) => y_of(c.value(g), r),
             None => y_of(if on { -3.0 } else { 0.0 }, r),
@@ -520,82 +369,6 @@ fn graph(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
     });
 }
 
-fn on_value(c: &Ctx, id: &str) -> bool {
-    c.value(id) >= 0.5
-}
-
-/// A Trimio knob: a value arc around a flat disc, label above and value below.
-fn knob(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, band: usize, id: &str, label: &str, color: Color32, p: &TrimioPalette) {
-    let Some(info) = c.param(id) else { return };
-    let size = 48.0;
-    let v = c.value(id);
-    let to_t = |x: f32| match info.taper {
-        Taper::Log if info.min > 0.0 => (x.max(info.min) / info.min).ln() / (info.max / info.min).ln(),
-        _ => (x - info.min) / (info.max - info.min),
-    };
-    let from_t = |t: f32| {
-        let t = t.clamp(0.0, 1.0);
-        match info.taper {
-            Taper::Log if info.min > 0.0 => info.min * (info.max / info.min).powf(t),
-            _ => info.min + (info.max - info.min) * t,
-        }
-    };
-    ui.allocate_ui_with_layout(vec2(84.0, 112.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-        ui.set_width(84.0);
-        ui.label(egui::RichText::new(label).font(regular(12.0)).color(p.text_secondary));
-        let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
-        let resp = resp.on_hover_cursor(CursorIcon::ResizeVertical);
-        if resp.dragged() {
-            let fine = ui.input(|i| i.modifiers.shift || i.modifiers.alt);
-            let k = if fine { 0.0015 } else { 0.006 };
-            let d = resp.drag_delta();
-            set(app, c, band, &[(id, from_t(to_t(v) + (d.x - d.y) * k))]);
-        }
-        if resp.drag_stopped() {
-            end_gesture(app);
-        }
-        if resp.double_clicked() {
-            set(app, c, band, &[(id, info.default)]);
-            end_gesture(app);
-        }
-        let painter = ui.painter();
-        let center = r.center();
-        let rad = size * 0.5 - 3.0;
-        let start = std::f32::consts::PI * 0.75;
-        let sweep = std::f32::consts::PI * 1.5;
-        let arc = |a0: f32, a1: f32| -> Vec<Pos2> {
-            (0..=32).map(|k| a0 + (a1 - a0) * k as f32 / 32.0).map(|a| center + vec2(a.cos(), a.sin()) * rad).collect()
-        };
-        painter.add(egui::Shape::line(arc(start, start + sweep), Stroke::new(3.0, p.surface_raised)));
-        let bipolar = info.min < 0.0 && info.max > 0.0;
-        let at = start + sweep * to_t(v).clamp(0.0, 1.0);
-        let from = if bipolar { start + sweep * to_t(0.0) } else { start };
-        let (a0, a1) = if at < from { (at, from) } else { (from, at) };
-        painter.add(egui::Shape::line(arc(a0, a1), Stroke::new(3.0, color)));
-        painter.circle_filled(center, rad - 6.0, p.surface_raised);
-        let dir = vec2(at.cos(), at.sin());
-        painter.line_segment([center + dir * (rad - 16.0), center + dir * (rad - 8.0)], Stroke::new(2.0, p.text_primary));
-        let shown = match info.unit {
-            soundcraft_dsp::Unit::Hz => fmt_freq(v),
-            soundcraft_dsp::Unit::Db => fmt_db(v),
-            _ => info.format(v),
-        };
-        ui.label(egui::RichText::new(shown).font(bold(13.0)).color(p.text_primary));
-    });
-}
-
-fn card(ui: &mut Ui, p: &TrimioPalette, add: impl FnOnce(&mut Ui)) {
-    egui::Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border_subtle))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(space::S3 as i8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui);
-        });
-}
-
 fn inspector(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
     let selected: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(sel_id(c)));
     card(ui, p, |ui| {
@@ -674,7 +447,7 @@ fn footer(app: &mut SoundApp, ui: &mut Ui, c: &Ctx, p: &TrimioPalette) {
             knob(app, ui, c, usize::MAX, "input_gain", "Input", p.accent, p);
             knob(app, ui, c, usize::MAX, "output_gain", "Output", p.accent, p);
             ui.add_space(space::S6);
-            let active = BAND_MAP.iter().filter(|b| c.is_on(b) && (b.on.is_some() || b.gain.is_some_and(|g| c.value(g).abs() > 0.05))).count();
+            let active = BAND_MAP.iter().filter(|b| is_on(c, b) && (b.on.is_some() || b.gain.is_some_and(|g| c.value(g).abs() > 0.05))).count();
             ui.vertical(|ui| {
                 ui.set_min_width(180.0);
                 ui.add_space(space::S6);

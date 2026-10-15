@@ -453,18 +453,35 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         let Some(info) = crate::mix_window::plugin_info(&ins.plugin) else { continue };
         let place = if instrument { "instrument".to_string() } else { char::from(b'a'.saturating_add(slot as u8)).to_string() };
         let mut open = true;
-        // EQ 7-Band gets the Trimio editor (graph-first); every other plugin the generic window.
-        if info.id == "eq_7band" && !instrument {
+        // Plugins with a Trimio editor get it; every other plugin the generic window.
+        let trimio: Option<
+            fn(&mut SoundApp, &mut Ui, soundcraft_model::TrackId, usize, &'static soundcraft_dsp::PluginInfo, &soundcraft_model::Insert),
+        > = match info.id {
+            "eq_7band" => Some(crate::trimio_eq::editor),
+            "compressor" => Some(crate::trimio_comp::editor),
+            "room_reverb" | "plate_reverb" => Some(crate::trimio_reverb::editor),
+            "mod_delay" => Some(crate::trimio_delay::editor),
+            _ => None,
+        };
+        if let Some(draw) = trimio
+            && !instrument
+        {
             let width = (ctx.content_rect().width() - 80.0).clamp(560.0, 860.0);
+            let max_h = (ctx.content_rect().height() - 120.0).max(160.0);
+            let short = max_h < 780.0;
             egui::Window::new(format!("{tname} · {place} · {}", info.name))
                 .id(egui::Id::new(("plugin", tid.0, slot)))
                 .open(&mut open)
-                .frame(crate::trimio_eq::frame(&ctx.global_style()))
+                .frame(crate::trimio_shell::frame(&ctx.global_style()))
                 .default_width(width)
                 .min_width(560.0)
                 .max_width(width.max(860.0))
                 .default_pos(egui::pos2((ctx.content_rect().width() - width - 40.0).max(0.0), 80.0))
-                .show(ctx, |ui| crate::trimio_eq::editor(app, ui, tid, slot, info, &ins));
+                // Sized to its content; on a screen too short for it, capped and scrolling instead.
+                .max_height(max_h)
+                .vscroll(short)
+                .default_height(if short { max_h } else { 0.0 })
+                .show(ctx, |ui| draw(app, ui, tid, slot, info, &ins));
             if open {
                 keep.push((tid, slot));
             }
