@@ -453,6 +453,23 @@ fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         let Some(info) = crate::mix_window::plugin_info(&ins.plugin) else { continue };
         let place = if instrument { "instrument".to_string() } else { char::from(b'a'.saturating_add(slot as u8)).to_string() };
         let mut open = true;
+        // EQ 7-Band gets the Trimio editor (graph-first); every other plugin the generic window.
+        if info.id == "eq_7band" && !instrument {
+            let width = (ctx.content_rect().width() - 80.0).clamp(560.0, 860.0);
+            egui::Window::new(format!("{tname} · {place} · {}", info.name))
+                .id(egui::Id::new(("plugin", tid.0, slot)))
+                .open(&mut open)
+                .frame(crate::trimio_eq::frame(&ctx.global_style()))
+                .default_width(width)
+                .min_width(560.0)
+                .max_width(width.max(860.0))
+                .default_pos(egui::pos2((ctx.content_rect().width() - width - 40.0).max(0.0), 80.0))
+                .show(ctx, |ui| crate::trimio_eq::editor(app, ui, tid, slot, info, &ins));
+            if open {
+                keep.push((tid, slot));
+            }
+            continue;
+        }
         let shown = egui::Window::new(format!("{tname} · {place} · {}", info.name))
             .id(egui::Id::new(("plugin", tid.0, slot)))
             .open(&mut open)
@@ -640,7 +657,7 @@ fn preset_dir(app: &SoundApp, plugin: &str) -> Option<std::path::PathBuf> {
     app.preset_dir.as_ref().map(|d| d.join(crate::preset_folder_name(plugin)))
 }
 
-fn preset_menu(
+pub(crate) fn preset_menu(
     app: &mut SoundApp,
     ui: &mut Ui,
     tid: soundcraft_model::TrackId,

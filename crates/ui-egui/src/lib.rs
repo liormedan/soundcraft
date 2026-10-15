@@ -27,6 +27,8 @@ pub mod shortcuts;
 pub mod spot;
 pub mod theme;
 pub mod toolbar;
+pub mod trimio_eq;
+pub mod trimio_tokens;
 pub mod video_track;
 pub mod video_window;
 pub mod waveform;
